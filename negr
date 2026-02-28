@@ -1,0 +1,767 @@
+import pygame
+import random
+import math
+import os
+
+# Инициализация Pygame
+pygame.init()
+
+# Константы
+WINDOW_WIDTH = 800
+WINDOW_HEIGHT = 600
+FPS = 60
+BASE_WIN_SCORE = 50  # Базовые очки для победы на первом уровне
+MAX_LEVEL = 10  # Максимальный уровень
+SAVE_FILE = "game_save.txt"  # Файл для сохранения прогресса
+
+# Цвета
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+YELLOW = (255, 255, 0)
+GRAY = (128, 128, 128)
+BROWN = (139, 69, 19)
+GOLD = (255, 215, 0)  # Цвет для победного сообщения
+PURPLE = (128, 0, 128)  # Цвет для сообщения о переходе на уровень
+ORANGE = (255, 165, 0)  # Цвет для информации о сохранении
+
+
+class Wall(pygame.sprite.Sprite):
+    """Класс стены"""
+
+    def __init__(self, x, y, width, height):
+        super().__init__()
+        self.image = pygame.Surface([width, height])
+        self.image.fill(BROWN)
+        self.rect = self.image.get_rect()
+        self.rect.x = x
+        self.rect.y = y
+
+
+class Player(pygame.sprite.Sprite):
+    """Класс игрока"""
+
+    def __init__(self, x, y):
+        super().__init__()
+        self.image = pygame.Surface([30, 30])
+        self.image.fill(BLUE)
+        self.rect = self.image.get_rect()
+        self.rect.x = x
+        self.rect.y = y
+        self.speed = 5
+        self.health = 100
+        self.max_health = 100
+
+    def update(self, walls):
+        """Обновление позиции игрока"""
+        keys = pygame.key.get_pressed()
+        old_x, old_y = self.rect.x, self.rect.y
+
+        # Движение
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            self.rect.x -= self.speed
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            self.rect.x += self.speed
+        if keys[pygame.K_UP] or keys[pygame.K_w]:
+            self.rect.y -= self.speed
+        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+            self.rect.y += self.speed
+
+        # Проверка столкновения со стенами
+        if pygame.sprite.spritecollide(self, walls, False):
+            self.rect.x, self.rect.y = old_x, old_y
+
+        # Ограничение движения в пределах экрана
+        self.rect.x = max(0, min(self.rect.x, WINDOW_WIDTH - self.rect.width))
+        self.rect.y = max(0, min(self.rect.y, WINDOW_HEIGHT - self.rect.height))
+
+    def draw_health_bar(self, screen):
+        """Отрисовка полоски здоровья"""
+        bar_width = 50
+        bar_height = 7
+        health_percentage = self.health / self.max_health
+        fill = bar_width * health_percentage
+
+        outline_rect = pygame.Rect(self.rect.x - 10, self.rect.y - 15, bar_width, bar_height)
+        fill_rect = pygame.Rect(self.rect.x - 10, self.rect.y - 15, fill, bar_height)
+
+        pygame.draw.rect(screen, RED, fill_rect)
+        pygame.draw.rect(screen, WHITE, outline_rect, 2)
+
+
+class Enemy(pygame.sprite.Sprite):
+    """Класс врага"""
+
+    def __init__(self, x, y, walls, player, level):
+        super().__init__()
+        self.image = pygame.Surface([25, 25])
+        self.image.fill(RED)
+        self.rect = self.image.get_rect()
+        self.rect.x = x
+        self.rect.y = y
+        # Увеличение скорости врагов с каждым уровнем
+        self.speed = 2 + (level - 1) * 0.3
+        self.walls = walls
+        self.player = player
+        self.health = 50 + (level - 1) * 10  # Увеличение здоровья с каждым уровнем
+        self.max_health = self.health
+        self.damage = 10 + (level - 1) * 2  # Увеличение урона с каждым уровнем
+        self.shoot_cooldown = 0
+        # Уменьшение задержки между выстрелами с каждым уровнем
+        self.shoot_delay = max(20, 60 - (level - 1) * 4)
+        self.target_position = None  # Целевая позиция для движения
+
+    def update(self, bullets, enemies):
+        """Обновление врага"""
+        # Простой ИИ: движение к игроку
+        old_x, old_y = self.rect.x, self.rect.y
+
+        # Если враг застрял, выбираем новую позицию для обхода
+        if self.target_position is None or (abs(self.rect.centerx - self.target_position[0]) < 5 and 
+                                           abs(self.rect.centery - self.target_position[1]) < 5):
+            # Выбираем точку рядом с игроком для движения
+            angle = random.uniform(0, 2 * math.pi)
+            distance = random.randint(50, 100)
+            self.target_position = (
+                self.player.rect.centerx + math.cos(angle) * distance,
+                self.player.rect.centery + math.sin(angle) * distance
+            )
+
+        # Расчет направления к целевой позиции
+        dx = self.target_position[0] - self.rect.centerx
+        dy = self.target_position[1] - self.rect.centery
+        distance_to_target = math.sqrt(dx ** 2 + dy ** 2)
+
+        # Также рассчитываем направление к игроку
+        dx_player = self.player.rect.centerx - self.rect.centerx
+        dy_player = self.player.rect.centery - self.rect.centery
+        distance_to_player = math.sqrt(dx_player ** 2 + dy_player ** 2)
+
+        # Комбинируем движение: 70% к игроку, 30% к целевой точке (для обхода препятствий)
+        if distance_to_player > 0 and distance_to_target > 0:
+            dx = dx_player / distance_to_player * 0.7 + dx / distance_to_target * 0.3
+            dy = dy_player / distance_to_player * 0.7 + dy / distance_to_target * 0.3
+            # Нормализуем
+            length = math.sqrt(dx ** 2 + dy ** 2)
+            if length > 0:
+                dx = dx / length * self.speed
+                dy = dy / length * self.speed
+        elif distance_to_player > 0:
+            dx = dx_player / distance_to_player * self.speed
+            dy = dy_player / distance_to_player * self.speed
+        else:
+            dx = 0
+            dy = 0
+
+        self.rect.x += dx
+        self.rect.y += dy
+
+        # Проверка столкновения со стенами
+        if pygame.sprite.spritecollide(self, self.walls, False):
+            self.rect.x, self.rect.y = old_x, old_y
+            # Если врезались в стену, меняем целевую позицию
+            self.target_position = None
+
+        # Стрельба
+        self.shoot_cooldown += 1
+        if self.shoot_cooldown >= self.shoot_delay and distance_to_player < 300:
+            self.shoot(bullets)
+            self.shoot_cooldown = 0
+
+    def shoot(self, bullets):
+        """Стрельба врага"""
+        dx = self.player.rect.centerx - self.rect.centerx
+        dy = self.player.rect.centery - self.rect.centery
+        distance = math.sqrt(dx ** 2 + dy ** 2)
+
+        if distance > 0:
+            dx = dx / distance * 5
+            dy = dy / distance * 5
+            bullet = EnemyBullet(self.rect.centerx, self.rect.centery, dx, dy)
+            bullets.add(bullet)
+
+
+class Bullet(pygame.sprite.Sprite):
+    """Класс пули игрока"""
+
+    def __init__(self, x, y, target_x, target_y):
+        super().__init__()
+        self.image = pygame.Surface([5, 5])
+        self.image.fill(YELLOW)
+        self.rect = self.image.get_rect()
+        self.rect.centerx = x
+        self.rect.centery = y
+
+        # Расчет направления
+        dx = target_x - x
+        dy = target_y - y
+        distance = math.sqrt(dx ** 2 + dy ** 2)
+
+        if distance > 0:
+            self.speed_x = dx / distance * 10
+            self.speed_y = dy / distance * 10
+        else:
+            self.speed_x = 0
+            self.speed_y = 0
+
+    def update(self, walls):
+        """Обновление позиции пули"""
+        self.rect.x += self.speed_x
+        self.rect.y += self.speed_y
+
+        # Проверка столкновения со стенами
+        if pygame.sprite.spritecollide(self, walls, False):
+            self.kill()  # Уничтожаем пулю при попадании в стену
+            return
+
+        # Удаление пули за пределами экрана
+        if (self.rect.x < 0 or self.rect.x > WINDOW_WIDTH or
+                self.rect.y < 0 or self.rect.y > WINDOW_HEIGHT):
+            self.kill()
+
+
+class EnemyBullet(pygame.sprite.Sprite):
+    """Класс пули врага"""
+
+    def __init__(self, x, y, speed_x, speed_y):
+        super().__init__()
+        self.image = pygame.Surface([5, 5])
+        self.image.fill(RED)
+        self.rect = self.image.get_rect()
+        self.rect.centerx = x
+        self.rect.centery = y
+        self.speed_x = speed_x
+        self.speed_y = speed_y
+
+    def update(self, walls):
+        """Обновление позиции пули"""
+        self.rect.x += self.speed_x
+        self.rect.y += self.speed_y
+
+        # Проверка столкновения со стенами
+        if pygame.sprite.spritecollide(self, walls, False):
+            self.kill()  # Уничтожаем пулю при попадании в стену
+            return
+
+        # Удаление пули за пределами экрана
+        if (self.rect.x < 0 or self.rect.x > WINDOW_WIDTH or
+                self.rect.y < 0 or self.rect.y > WINDOW_HEIGHT):
+            self.kill()
+
+
+class Game:
+    """Основной класс игры"""
+
+    def __init__(self):
+        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        pygame.display.set_caption("Шутер на Pygame - Уровни с сохранением")
+        self.clock = pygame.time.Clock()
+        self.running = True
+        self.font = pygame.font.Font(None, 36)
+        self.big_font = pygame.font.Font(None, 72)
+        self.small_font = pygame.font.Font(None, 24)
+
+        # Группы спрайтов
+        self.all_sprites = pygame.sprite.Group()
+        self.walls = pygame.sprite.Group()
+        self.enemies = pygame.sprite.Group()
+        self.player_bullets = pygame.sprite.Group()
+        self.enemy_bullets = pygame.sprite.Group()
+
+        # Параметры уровней
+        self.current_level = 1
+        self.win_score = BASE_WIN_SCORE
+        self.level_complete = False
+        self.level_transition_timer = 0
+        self.transition_duration = 180  # 3 секунды при 60 FPS
+
+        # Загружаем сохранение или создаем новый уровень
+        # Убрано автоматическое сохранение при запуске
+        self.setup_level()
+
+        self.score = 0
+        self.game_over = False
+        self.game_won = False
+        self.show_save_message = False
+        self.save_message_timer = 0
+
+    def save_game(self):
+        """Сохранение прогресса игры в текстовый файл"""
+        try:
+            with open(SAVE_FILE, 'w') as f:
+                # Сохраняем данные в простом текстовом формате
+                f.write(f"{self.current_level}\n")
+                f.write(f"{self.score}\n")
+                f.write(f"{self.win_score}\n")
+            self.show_save_message = True
+            self.save_message_timer = 120  # Показываем сообщение 2 секунды
+            return True
+        except Exception as e:
+            print(f"Ошибка сохранения: {e}")
+            return False
+
+    def load_game(self):
+        """Загрузка прогресса игры из текстового файла"""
+        if not os.path.exists(SAVE_FILE):
+            return False
+        
+        try:
+            with open(SAVE_FILE, 'r') as f:
+                lines = f.readlines()
+                
+            if len(lines) >= 3:
+                self.current_level = int(lines[0].strip())
+                self.score = int(lines[1].strip())
+                self.win_score = int(lines[2].strip())
+                
+                # Настраиваем уровень с загруженными параметрами
+                self.setup_level()
+                print(f"Игра загружена. Уровень: {self.current_level}, Счет: {self.score}")
+                return True
+            else:
+                print("Файл сохранения поврежден")
+                return False
+                
+        except Exception as e:
+            print(f"Ошибка загрузки: {e}")
+            return False
+
+    def is_position_valid(self, rect, walls_group, margin=20):
+        """Проверка, не пересекается ли позиция со стенами"""
+        # Проверка границ экрана
+        if (rect.x < margin or rect.x > WINDOW_WIDTH - rect.width - margin or
+                rect.y < margin or rect.y > WINDOW_HEIGHT - rect.height - margin):
+            return False
+
+        # Проверка столкновения со стенами
+        temp_sprite = pygame.sprite.Sprite()
+        temp_sprite.rect = rect
+        if pygame.sprite.spritecollide(temp_sprite, walls_group, False):
+            return False
+
+        return True
+
+    def create_walls(self):
+        """Создание стен на карте"""
+        # Очищаем существующие стены
+        for wall in self.walls:
+            wall.kill()
+
+        # Внешние стены (границы карты) - делаем их тоньше
+        walls_positions = [
+            (0, 0, WINDOW_WIDTH, 5),  # Верхняя стена (тоньше)
+            (0, 0, 5, WINDOW_HEIGHT),  # Левая стена (тоньше)
+            (WINDOW_WIDTH - 5, 0, 5, WINDOW_HEIGHT),  # Правая стена (тоньше)
+            (0, WINDOW_HEIGHT - 5, WINDOW_WIDTH, 5),  # Нижняя стена (тоньше)
+        ]
+
+        for wall_pos in walls_positions:
+            wall = Wall(*wall_pos)
+            self.walls.add(wall)
+            self.all_sprites.add(wall)
+
+        # Создаем внутренние стены - тонкие
+        num_walls = random.randint(8, 15)  # Больше стен, но тоньше
+        wall_attempts = 0
+        max_attempts = 300
+
+        while len([w for w in self.walls if w.rect.width > 5]) < num_walls + 4 and wall_attempts < max_attempts:
+            wall_attempts += 1
+
+            # Выбираем тип стены: горизонтальная или вертикальная
+            if random.choice([True, False]):  # Горизонтальная стена
+                wall_width = random.randint(100, 300)  # Длинная, но тонкая
+                wall_height = random.randint(5, 15)  # Тонкая
+            else:  # Вертикальная стена
+                wall_width = random.randint(5, 15)  # Тонкая
+                wall_height = random.randint(100, 300)  # Длинная
+
+            # Случайная позиция (не слишком близко к краям)
+            x = random.randint(20, WINDOW_WIDTH - wall_width - 20)
+            y = random.randint(20, WINDOW_HEIGHT - wall_height - 20)
+
+            # Создаем временный rect для проверки
+            temp_rect = pygame.Rect(x, y, wall_width, wall_height)
+            temp_wall = Wall(x, y, wall_width, wall_height)
+
+            # Проверка, что стена не слишком близко к другим стенам
+            too_close = False
+            for existing_wall in self.walls:
+                # Уменьшаем зону проверки для тонких стен
+                if temp_rect.colliderect(existing_wall.rect.inflate(20, 20)):
+                    too_close = True
+                    break
+
+            if not too_close:
+                self.walls.add(temp_wall)
+                self.all_sprites.add(temp_wall)
+
+    def spawn_player(self):
+        """Создание игрока в случайной свободной позиции"""
+        player = None
+        attempts = 0
+        max_attempts = 200
+
+        while attempts < max_attempts:
+            x = random.randint(20, WINDOW_WIDTH - 50)
+            y = random.randint(20, WINDOW_HEIGHT - 50)
+
+            # Создаем временного игрока для проверки
+            temp_player = Player(x, y)
+
+            if self.is_position_valid(temp_player.rect, self.walls, margin=30):
+                player = temp_player
+                self.all_sprites.add(player)
+                return player
+
+            attempts += 1
+
+        # Если не нашли свободное место, создаем игрока в центре
+        print("Не удалось найти свободное место, создаем игрока в центре")
+        player = Player(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2)
+        self.all_sprites.add(player)
+        return player
+
+    def spawn_enemy(self):
+        """Создание нового врага в случайной свободной позиции"""
+        attempts = 0
+        max_attempts = 100
+
+        while attempts < max_attempts:
+            x = random.randint(20, WINDOW_WIDTH - 50)
+            y = random.randint(20, WINDOW_HEIGHT - 50)
+
+            # Создаем временного врага для проверки с учетом уровня
+            temp_enemy = Enemy(x, y, self.walls, self.player, self.current_level)
+
+            # Проверка, что враг не появляется в стене и не слишком близко к игроку
+            if self.is_position_valid(temp_enemy.rect, self.walls, margin=20):
+                if math.sqrt((x - self.player.rect.x) ** 2 + (y - self.player.rect.y) ** 2) > 100:
+                    enemy = Enemy(x, y, self.walls, self.player, self.current_level)
+                    self.enemies.add(enemy)
+                    self.all_sprites.add(enemy)
+                    return True
+
+            attempts += 1
+
+        # Если не нашли свободное место, создаем врага в углу
+        enemy = Enemy(100, 100, self.walls, self.player, self.current_level)
+        self.enemies.add(enemy)
+        self.all_sprites.add(enemy)
+        return True
+
+    def setup_level(self):
+        """Настройка нового уровня"""
+        # Очищаем все группы
+        for enemy in self.enemies:
+            enemy.kill()
+        for bullet in self.player_bullets:
+            bullet.kill()
+        for bullet in self.enemy_bullets:
+            bullet.kill()
+
+        # Создаем новые стены
+        self.create_walls()
+
+        # Создаем или перемещаем игрока
+        if hasattr(self, 'player') and self.player:
+            self.player.kill()
+        self.player = self.spawn_player()
+
+        # Создаем врагов
+        num_enemies = min(3 + self.current_level, 8)  # Максимум 8 врагов
+        for i in range(num_enemies):
+            self.spawn_enemy()
+
+        # Обновляем целевой счет для уровня
+        self.win_score = BASE_WIN_SCORE * self.current_level
+        self.level_complete = False
+
+    def respawn_player(self):
+        """Возрождение игрока на текущем уровне"""
+        # Очищаем все пули
+        for bullet in self.player_bullets:
+            bullet.kill()
+        for bullet in self.enemy_bullets:
+            bullet.kill()
+        
+        # Удаляем старого игрока
+        if hasattr(self, 'player') and self.player:
+            self.player.kill()
+        
+        # Создаем нового игрока в случайном месте
+        self.player = self.spawn_player()
+        
+        # Восстанавливаем здоровье игрока
+        self.player.health = self.player.max_health
+        
+        # Обновляем ссылку на игрока у всех врагов
+        for enemy in self.enemies:
+            enemy.player = self.player
+        
+        # Сбрасываем целевую позицию врагов для лучшего движения
+        for enemy in self.enemies:
+            enemy.target_position = None
+
+    def next_level(self):
+        """Переход на следующий уровень"""
+        if self.current_level < MAX_LEVEL:
+            self.current_level += 1
+            self.setup_level()
+        else:
+            # Игрок прошел все уровни
+            self.game_won = True
+            # Удаляем сохранение при полном прохождении
+            if os.path.exists(SAVE_FILE):
+                os.remove(SAVE_FILE)
+
+    def handle_events(self):
+        """Обработка событий"""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                # При выходе удаляем файл сохранения
+                if os.path.exists(SAVE_FILE):
+                    os.remove(SAVE_FILE)
+                self.running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    # При выходе удаляем файл сохранения
+                    if os.path.exists(SAVE_FILE):
+                        os.remove(SAVE_FILE)
+                    self.running = False
+                if event.key == pygame.K_SPACE and not self.game_over and not self.game_won and not self.level_complete:
+                    self.shoot()
+                if event.key == pygame.K_r and self.game_over:
+                    self.respawn_player()  # Возрождаемся на том же уровне
+                    self.game_over = False
+                if event.key == pygame.K_RETURN and self.level_complete and self.current_level < MAX_LEVEL:
+                    self.next_level()
+                if event.key == pygame.K_s and not self.game_over and not self.game_won:  # Ручное сохранение
+                    self.save_game()
+            elif event.type == pygame.MOUSEBUTTONDOWN and not self.game_over and not self.game_won and not self.level_complete:
+                if event.button == 1:  # Левая кнопка мыши
+                    self.shoot()
+
+    def shoot(self):
+        """Стрельба игрока"""
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        bullet = Bullet(self.player.rect.centerx, self.player.rect.centery, mouse_x, mouse_y)
+        self.player_bullets.add(bullet)
+        self.all_sprites.add(bullet)
+
+    def update(self):
+        """Обновление игры"""
+        if not self.game_over and not self.game_won:
+            if not self.level_complete:
+                # Обновление игрока
+                self.player.update(self.walls)
+
+                # Обновление врагов
+                for enemy in self.enemies:
+                    enemy.update(self.enemy_bullets, self.enemies)
+
+                # Обновление пуль с проверкой стен
+                for bullet in self.player_bullets:
+                    bullet.update(self.walls)
+
+                for bullet in self.enemy_bullets:
+                    bullet.update(self.walls)
+
+                # Проверка попаданий пуль игрока во врагов
+                hits = pygame.sprite.groupcollide(self.enemies, self.player_bullets, False, True)
+                for enemy in hits:
+                    enemy.health -= 25
+                    if enemy.health <= 0:
+                        enemy.kill()
+                        self.score += 10
+
+                # Проверка завершения уровня
+                if self.score >= self.win_score:
+                    self.level_complete = True
+                    self.level_transition_timer = self.transition_duration
+                    # Сохраняем прогресс при завершении уровня
+                    self.save_game()
+
+                # Проверка попаданий пуль врагов в игрока
+                hits = pygame.sprite.spritecollide(self.player, self.enemy_bullets, True)
+                if hits:
+                    self.player.health -= 10
+
+                # Проверка столкновения игрока с врагами
+                hits = pygame.sprite.spritecollide(self.player, self.enemies, False)
+                if hits:
+                    self.player.health -= 1
+
+                # Проверка смерти игрока
+                if self.player.health <= 0:
+                    self.game_over = True
+
+                # Спавн нового врага, если врагов слишком мало
+                if len(self.enemies) < 3 and not self.level_complete:
+                    self.spawn_enemy()
+            else:
+                # Анимация перехода между уровнями
+                self.level_transition_timer -= 1
+                if self.level_transition_timer <= 0 and self.current_level < MAX_LEVEL:
+                    # Автоматический переход после таймера
+                    self.next_level()
+        
+        # Обновление таймера сообщения о сохранении
+        if self.show_save_message:
+            self.save_message_timer -= 1
+            if self.save_message_timer <= 0:
+                self.show_save_message = False
+
+    def draw(self):
+        """Отрисовка игры"""
+        self.screen.fill(BLACK)
+
+        # Отрисовка всех спрайтов
+        self.all_sprites.draw(self.screen)
+        self.enemy_bullets.draw(self.screen)
+
+        # Отрисовка полоски здоровья игрока
+        if hasattr(self, 'player') and self.player:
+            self.player.draw_health_bar(self.screen)
+
+        # Отрисовка информации об уровне
+        level_text = self.font.render(f"Уровень: {self.current_level}/{MAX_LEVEL}", True, GREEN)
+        self.screen.blit(level_text, (10, 10))
+
+        # Отрисовка счета
+        score_text = self.font.render(f"Счет: {self.score}/{self.win_score}", True, WHITE)
+        self.screen.blit(score_text, (10, 50))
+
+        # Отрисовка количества врагов
+        enemies_text = self.font.render(f"Враги: {len(self.enemies)}", True, WHITE)
+        self.screen.blit(enemies_text, (10, 90))
+
+        # Отрисовка характеристик уровня
+        if self.current_level > 1:
+            info_text = self.small_font.render(f"Скорость врагов: +{round((self.current_level-1)*0.3, 1)}", True, GRAY)
+            self.screen.blit(info_text, (10, 130))
+            info_text2 = self.small_font.render(f"Здоровье врагов: +{(self.current_level-1)*10}", True, GRAY)
+            self.screen.blit(info_text2, (10, 155))
+
+        # Подсказка по управлению
+        hint_text = self.small_font.render("S - сохранить | R - возродиться (после смерти)", True, GRAY)
+        self.screen.blit(hint_text, (10, WINDOW_HEIGHT - 30))
+
+        # Отрисовка сообщения о сохранении
+        if self.show_save_message:
+            save_text = self.font.render("Игра сохранена!", True, ORANGE)
+            save_rect = save_text.get_rect(center=(WINDOW_WIDTH // 2, 100))
+            self.screen.blit(save_text, save_rect)
+
+        # Отрисовка Game Over
+        if self.game_over:
+            # Затемнение экрана
+            s = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            s.fill((0, 0, 0, 128))
+            self.screen.blit(s, (0, 0))
+
+            game_over_text = self.big_font.render("GAME OVER", True, RED)
+            text_rect = game_over_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 50))
+            self.screen.blit(game_over_text, text_rect)
+
+            level_info = self.font.render(f"Вы погибли на уровне {self.current_level}", True, WHITE)
+            level_rect = level_info.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
+            self.screen.blit(level_info, level_rect)
+
+            respawn_text = self.font.render("Нажмите R для возрождения на этом уровне", True, GREEN)
+            respawn_rect = respawn_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 50))
+            self.screen.blit(respawn_text, respawn_rect)
+
+        # Отрисовка сообщения о завершении уровня
+        if self.level_complete and not self.game_won:
+            # Затемнение экрана
+            s = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            s.fill((0, 0, 0, 128))
+            self.screen.blit(s, (0, 0))
+
+            if self.current_level < MAX_LEVEL:
+                level_complete_text = self.big_font.render(f"УРОВЕНЬ {self.current_level} ПРОЙДЕН!", True, GREEN)
+                text_rect = level_complete_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 50))
+                self.screen.blit(level_complete_text, text_rect)
+
+                next_level_text = self.font.render(f"Нажмите ENTER для перехода на уровень {self.current_level + 1}", True, WHITE)
+                text_rect2 = next_level_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 20))
+                self.screen.blit(next_level_text, text_rect2)
+
+                timer_text = self.font.render(f"Автопереход через {self.level_transition_timer // 60 + 1} сек", True, GRAY)
+                text_rect3 = timer_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 60))
+                self.screen.blit(timer_text, text_rect3)
+                
+                save_info = self.small_font.render("Прогресс автоматически сохранен", True, ORANGE)
+                save_rect = save_info.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 100))
+                self.screen.blit(save_info, save_rect)
+            else:
+                self.game_won = True
+
+        # Отрисовка сообщения о победе в игре
+        if self.game_won:
+            # Затемнение экрана
+            s = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            s.fill((0, 0, 0, 128))
+            self.screen.blit(s, (0, 0))
+
+            # Победное сообщение
+            win_text = self.big_font.render("ТЫ ПОБЕДИЛ В ИГРЕ!", True, GOLD)
+            text_rect = win_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 70))
+            self.screen.blit(win_text, text_rect)
+
+            # Информация о пройденных уровнях
+            levels_text = self.font.render(f"Пройдено уровней: {MAX_LEVEL}", True, WHITE)
+            levels_rect = levels_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
+            self.screen.blit(levels_text, levels_rect)
+
+            # Информация о счете
+            score_win_text = self.font.render(f"Финальный счет: {self.score}", True, WHITE)
+            score_rect = score_win_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 40))
+            self.screen.blit(score_win_text, score_rect)
+
+            # Инструкция по рестарту
+            restart_text = self.font.render("Нажмите R для новой игры или ESC для выхода", True, WHITE)
+            restart_rect = restart_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 100))
+            self.screen.blit(restart_text, restart_rect)
+
+        pygame.display.flip()
+
+    def restart(self):
+        """Полный перезапуск игры"""
+        self.all_sprites.empty()
+        self.walls.empty()
+        self.enemies.empty()
+        self.player_bullets.empty()
+        self.enemy_bullets.empty()
+
+        # Сброс параметров
+        self.current_level = 1
+        self.score = 0
+        self.game_over = False
+        self.game_won = False
+        self.level_complete = False
+
+        # Удаляем сохранение
+        if os.path.exists(SAVE_FILE):
+            os.remove(SAVE_FILE)
+
+        # Настройка первого уровня
+        self.setup_level()
+
+    def run(self):
+        """Основной игровой цикл"""
+        while self.running:
+            self.handle_events()
+            self.update()
+            self.draw()
+            self.clock.tick(FPS)
+
+        pygame.quit()
+
+
+if __name__ == "__main__":
+    game = Game()
+    game.run()
